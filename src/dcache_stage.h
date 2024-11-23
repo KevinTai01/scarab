@@ -79,6 +79,21 @@ typedef struct Dcache_Data_struct {
 } Dcache_Data;
 
 
+// Shadow cache for mirroring the cache state
+// and tracking capacity misses.
+typedef struct CacheLine {
+  int valid;
+  unsigned long tag;
+  struct CacheLine* next;
+} CacheLine;
+
+typedef struct {
+  CacheLine* head;
+  int size;
+  int capacity;
+} Shadow_Cache;
+
+
 /**************************************************************************************/
 /* External variables */
 
@@ -86,6 +101,15 @@ extern Dcache_Stage* dc;
 
 /**************************************************************************************/
 /* Prototypes */
+
+int is_compulsory(int64);
+
+// Shadow cache functions
+Shadow_Cache* init_shadow_cache(int);
+int search_shadow_cache(Shadow_Cache*, unsigned long);
+int access_shadow_cache(Shadow_Cache*, unsigned long);
+void insert_shadow_cache(Shadow_Cache*, unsigned long);
+void free_shadow_cache(Shadow_Cache*);
 
 void set_dcache_stage(Dcache_Stage*);
 void init_dcache_stage(uns8, const char*);

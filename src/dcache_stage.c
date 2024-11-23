@@ -62,6 +62,8 @@
 /* Global Variables */
 
 Dcache_Stage* dc = NULL;
+Hash_Table address_table;
+Shadow_Cache* shadow_cache;
 
 /**************************************************************************************/
 /* set_dcache_stage: */
@@ -111,6 +113,117 @@ void init_dcache_stage(uns8 proc_id, const char* name) {
                DCACHE_REPL);
 
   memset(dc->rand_wb_state, 0, NUM_ELEMENTS(dc->rand_wb_state));
+
+  // Initialize the hash table for tracking compulsory misses.
+  // init_hash_table(&address_table, "Address Table", 1024, sizeof(int));
+  // TODO: Check that the number of buckets is appropriate
+  init_hash_table(&address_table, "Address Table", 4096, sizeof(int));
+
+  ASSERT(0, DCACHE_REPL == 0); // Only support LRU for now
+  ASSERT(0, DCACHE_SIZE % DCACHE_LINE_SIZE == 0);
+
+  shadow_cache = init_shadow_cache(DCACHE_SIZE / DCACHE_LINE_SIZE);
+}
+
+
+int is_compulsory(int64 address) {
+  Flag new_entry; // Did we need to create a new entry in the hash table?
+  int* entry = hash_table_access_create(&address_table, address, &new_entry);
+
+  if (new_entry) {
+    // This is the first time we see this address
+    *entry = 1; // Mark the address as seen
+    return 1;
+  }
+
+  return 0;
+}
+
+
+// Initialize the shadow cache
+Shadow_Cache* init_shadow_cache(const int capacity) {
+  Shadow_Cache* shadow_cache = malloc(sizeof(Shadow_Cache));
+  shadow_cache->head = NULL;
+  shadow_cache->size = 0;
+  shadow_cache->capacity = capacity;
+
+  return shadow_cache;
+}
+
+
+int search_shadow_cache(Shadow_Cache* shadow_cache, const unsigned long tag) {
+  CacheLine* curr = shadow_cache->head;
+
+  // Search for the tag in the shadow cache
+  while (curr != NULL) {
+    if (curr->valid && curr->tag == tag) {
+      return 1; // Shadow cache hit
+    }
+    curr = curr->next;
+  }
+
+  return 0;
+}
+
+// Access the shadow cache and update LRU
+int access_shadow_cache(Shadow_Cache* shadow_cache, const unsigned long tag) {
+  // Note that the tag isn't the same as the tag for the non-fully-associative cache.
+  // Instead, it is the address bit-shifted by the offset bits.
+
+  CacheLine* prev = NULL;
+  CacheLine* curr = shadow_cache->head;
+
+  // Search for the tag in the shadow cache
+  while (curr != NULL) {
+    if (curr->valid && curr->tag == tag) {
+      // Move the accessed line to the front (used for LRU)
+      if (prev != NULL) {
+        prev->next = curr->next;
+        curr->next = shadow_cache->head;
+        shadow_cache->head = curr;
+      }
+      return 1; // Shadow cache hit
+    }
+    prev = curr;
+    curr = curr->next;
+  }
+
+  return 0; // Shadow cache miss
+}
+
+
+void insert_shadow_cache (Shadow_Cache* shadow_cache, const unsigned long tag) {
+  // Insert the new line at the front
+  CacheLine* new_line = malloc(sizeof(CacheLine));
+  new_line->valid = 1;
+  new_line->tag = tag;
+  new_line->next = shadow_cache->head;
+  shadow_cache->head = new_line;
+
+  // If the shadow cache is full, remove the least recently used line at the end
+  if (shadow_cache->size < shadow_cache->capacity) {
+    shadow_cache->size++;
+  } else {
+    CacheLine* temp = shadow_cache->head;
+    for (int i = 1; i < shadow_cache->capacity - 1; i++) {
+      temp = temp->next;
+    }
+    free(temp->next);
+    temp->next = NULL;
+  }
+}
+
+
+// Free the shadow cache
+// Not being used right now, since the program exits after the simulation
+void free_shadow_cache(Shadow_Cache* shadow_cache) {
+  CacheLine* curr = shadow_cache->head;
+  while (curr != NULL) {
+    CacheLine* temp = curr;
+    curr = curr->next;
+    free(temp);
+  }
+  free(shadow_cache);
 }
 
 
@@ -161,6 +274,8 @@ void update_dcache_stage(Stage_Data* src_sd) {
   int          start_op_count;
   Addr         line_addr;
   uns          ii, jj;
+
+  int sc_hit;
 
   // {{{ phase 1 - move ops into the dcache stage
   ASSERT(dc->proc_id, src_sd->max_op_count == dc->sd.max_op_count);
@@ -286,6 +401,9 @@ void update_dcache_stage(Stage_Data* src_sd) {
 
     line = (Dcache_Data*)cache_access(&dc->dcache, op->oracle_info.va,
                                       &line_addr, TRUE);
+
+    sc_hit = access_shadow_cache(shadow_cache, line_addr);
+
     op->dcache_cycle = cycle_count;
     dc->idle_cycle   = MAX2(dc->idle_cycle, cycle_count + DCACHE_CYCLES);
 
@@ -426,6 +544,14 @@ void update_dcache_stage(Stage_Data* src_sd) {
           }
 
           if(!op->off_path) {
+            if (is_compulsory(line_addr)) {
+              STAT_EVENT(op->proc_id, DCACHE_COMPULSORY_MISS);
+            } else if (search_shadow_cache(shadow_cache, line_addr)) {
+              STAT_EVENT(op->proc_id, DCACHE_CONFLICT_MISS);
+            } else {
+              STAT_EVENT(op->proc_id, DCACHE_CAPACITY_MISS);
+            }
+
             STAT_EVENT(op->proc_id, DCACHE_MISS);
             STAT_EVENT(op->proc_id, DCACHE_MISS_ONPATH);
             STAT_EVENT(op->proc_id, DCACHE_MISS_LD_ONPATH);
@@ -481,6 +607,14 @@ void update_dcache_stage(Stage_Data* src_sd) {
           }
 
           if(!op->off_path) {
+            // if (is_compulsory(op->oracle_info.va >> offset_bits)) {
+            //   STAT_EVENT(op->proc_id, DCACHE_COMPULSORY_MISS);
+            // } else if (sc_hit) {
+            //   STAT_EVENT(op->proc_id, DCACHE_CONFLICT_MISS);
+            // } else {
+            //   STAT_EVENT(op->proc_id, DCACHE_CAPACITY_MISS);
+            // }
+
             STAT_EVENT(op->proc_id, DCACHE_MISS);
             STAT_EVENT(op->proc_id, DCACHE_MISS_ONPATH);
             STAT_EVENT(op->proc_id, DCACHE_MISS_LD_ONPATH);
@@ -539,6 +673,14 @@ void update_dcache_stage(Stage_Data* src_sd) {
           }
 
           if(!op->off_path) {
+            if (is_compulsory(line_addr)) {
+              STAT_EVENT(op->proc_id, DCACHE_COMPULSORY_MISS);
+            } else if (search_shadow_cache(shadow_cache, line_addr)) {
+              STAT_EVENT(op->proc_id, DCACHE_CONFLICT_MISS);
+            } else {
+              STAT_EVENT(op->proc_id, DCACHE_CAPACITY_MISS);
+            }
+
             STAT_EVENT(op->proc_id, DCACHE_MISS);
             STAT_EVENT(op->proc_id, DCACHE_MISS_ONPATH);
             STAT_EVENT(op->proc_id, DCACHE_MISS_ST_ONPATH);
@@ -625,6 +767,9 @@ Flag dcache_fill_line(Mem_Req* req) {
 
     data = (Dcache_Data*)cache_insert(&dc->pref_dcache, dc->proc_id, req->addr,
                                       &line_addr, &repl_line_addr);
+
+    insert_shadow_cache(shadow_cache, line_addr);
+
     ASSERT(dc->proc_id, req->emitted_cycle);
     ASSERT(dc->proc_id, cycle_count >= req->emitted_cycle);
     // mark the data as HW_prefetch if prefetch mark it as
@@ -677,6 +822,9 @@ Flag dcache_fill_line(Mem_Req* req) {
 
     data = (Dcache_Data*)cache_insert(&dc->dcache, dc->proc_id, req->addr,
                                       &line_addr, &repl_line_addr);
+
+    insert_shadow_cache(shadow_cache, line_addr);
+
     DEBUG(dc->proc_id,
           "Filling dcache  off_path:%d addr:0x%s  :%7d index:%7d op_count:%d "
           "oldest:%lld\n",
