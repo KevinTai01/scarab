@@ -40,6 +40,7 @@
 #include "bp/bp_targ_mech.h"
 #include "bp/cbp_to_scarab.h"
 #include "bp/gshare.h"
+#include "bp/bimodal.h"
 #include "bp/hybridgp.h"
 #include "bp/tagescl.h"
 #include "libs/cache_lib.h"
