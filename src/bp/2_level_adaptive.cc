@@ -1,16 +1,17 @@
-#include "bimodal.h"
+#include "2_level_adaptive.h"
 
 #include <vector>
 
 extern "C" {
-#include "bp/bp.param.h"
-#include "core.param.h"
-#include "globals/assert.h"
-#include "statistics.h"
+  #include "bp/bp.param.h"
+  #include "core.param.h"
+  #include "globals/assert.h"
+  #include "statistics.h"
 }
 
 #define DEBUG(proc_id, args...) _DEBUG(proc_id, DEBUG_BP_DIR, ##args)    // for debugging purposes
 Hash_Table hash_history_register_table;
+
 
 namespace {
 
@@ -18,7 +19,7 @@ namespace {
     std::vector<uns8> pht;
   };
 
-  std::vector<2_level_adaptive_State> bimodal_state_all_cores;
+  std::vector<2_level_adaptive_State> 2_level_adaptive_state_all_cores;
 
   uns32 get_pht_index(const Addr addr, const uns32 hist) {
     const uns32 cooked_hist = hist >> (32 - HIST_LENGTH);
@@ -51,14 +52,14 @@ void bp_2_level_adaptive_init() {
 //void bp_2_level_adaptive_recover(Recovery_Info* info) {}
 
 uns8 bp_2_level_adaptive_pred(Op* op) {
-  const uns   proc_id      = op->proc_id;
+  const uns   proc_id      = op->proc_id;                           // process ID      
   const auto& bimodal_state = bimodal_state_all_cores.at(proc_id);
-  const Addr  addr      = op->oracle_info.pred_addr;
-  const uns32 hist      = op->oracle_info.pred_global_hist;
-  const uns32 pht_index = get_pht_index(addr, hist);
+  const Addr  addr      = op->oracle_info.pred_addr;                // instruction address
+  const uns32 hist      = op->oracle_info.pred_global_hist;         // prediction history
+  // const uns32 pht_index = get_pht_index(addr, hist);
   const uns8  pht_entry = bimodal_state.pht[pht_index];
   // uns8  prediction_bit_zc      = 0
-  prediction_bit_zc = pht_entry >> (PHT_CTR_BITS - 1) & 0x1;
+  //prediction_bit_zc = pht_entry >> (PHT_CTR_BITS - 1) & 0x1;
 
   // DEBUG(proc_id, "Predicting with bimodal for  op_num:%s  index:%d\n", unsstr64(op->op_num), pht_index);
   // DEBUG(proc_id, "Predicting  addr:%s  pht:%u  pred:%d  dir:%d\n", hexstr64s(addr), pht_index, pred, op->oracle_info.dir);
@@ -85,10 +86,10 @@ void bp_2_level_adaptive_update(Op* op) {
     return;
   }
 
-  const uns   proc_id      = op->proc_id;
+  const uns   proc_id      = op->proc_id;                           // process ID
   auto&       bimodal_state = bimodal_state_all_cores.at(proc_id);
-  const Addr  addr         = op->oracle_info.pred_addr;
-  const uns32 hist         = op->oracle_info.pred_global_hist;
+  const Addr  addr         = op->oracle_info.pred_addr;             // instruction address
+  const uns32 hist         = op->oracle_info.pred_global_hist;      // prediction history
   const uns32 pht_index    = get_pht_index(addr, hist);
   const uns8  pht_entry    = bimodal_state.pht[pht_index];
 
