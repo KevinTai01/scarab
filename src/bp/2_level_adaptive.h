@@ -1,7 +1,7 @@
-// 2_LEVEL_ADAPTIVE_H: prototypes for 2_level adaptive training bp
+// TWO_LEVEL_ADAPTIVE_H: prototypes for 2_level adaptive training bp
 
-#ifndef __2_LEVEL_ADAPTIVE_H__
-#define __2_LEVEL_ADAPTIVE_H__
+#ifndef __TWO_LEVEL_ADAPTIVE_H__
+#define __TWO_LEVEL_ADAPTIVE_H__
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,4 +24,4 @@ extern "C" {
 #endif
 
 
-#endif  // __2_LEVEL_ADAPTIVE_H__
+#endif  // __TWO_LEVEL_ADAPTIVE_H__
