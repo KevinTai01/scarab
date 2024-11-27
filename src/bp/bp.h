@@ -176,6 +176,7 @@ typedef struct Bp_Data_struct {
 typedef enum Bp_Id_enum {
   GSHARE_BP,
   BIMODAL_BP,
+  TWO_LEVEL_ADAPTIVE_BP,
   HYBRIDGP_BP,
   TAGESCL_BP,
   TAGESCL80_BP,
