@@ -9,15 +9,15 @@ extern "C" {
 
 #include "bp/bp.h"
 
-  /*************Interface to Scarab***************/
-  void bp_two_level_adaptive_init(void);
-  void bp_two_level_adaptive_timestamp(Op*);
-  uns8 bp_two_level_adaptive_pred(Op*);
-  uns8 bp_two_level_adaptive_spec_update(Op*);
-  void bp_two_level_adaptive_update(Op*);
-  void bp_two_level_adaptive_retire(Op*);
-  void bp_two_level_adaptive_recover(Recovery_Info*);
-  uns8 bp_two_level_adaptive_full(uns);
+/*************Interface to Scarab***************/
+void bp_two_level_adaptive_init(void);
+void bp_two_level_adaptive_timestamp(Op*);
+uns8 bp_two_level_adaptive_pred(Op*);
+uns8 bp_two_level_adaptive_spec_update(Op*);
+void bp_two_level_adaptive_update(Op*);
+void bp_two_level_adaptive_retire(Op*);
+void bp_two_level_adaptive_recover(Recovery_Info*);
+uns8 bp_two_level_adaptive_full(uns);
 
 #ifdef __cplusplus
 }
