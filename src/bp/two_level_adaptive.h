@@ -13,7 +13,7 @@ extern "C" {
 void bp_two_level_adaptive_init(void);
 void bp_two_level_adaptive_timestamp(Op*);
 uns8 bp_two_level_adaptive_pred(Op*);
-uns8 bp_two_level_adaptive_spec_update(Op*);
+void bp_two_level_adaptive_spec_update(Op*);
 void bp_two_level_adaptive_update(Op*);
 void bp_two_level_adaptive_retire(Op*);
 void bp_two_level_adaptive_recover(Recovery_Info*);
