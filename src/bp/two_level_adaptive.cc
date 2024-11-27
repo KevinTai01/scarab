@@ -196,7 +196,7 @@ uns8 bp_two_level_adaptive_pred(Op* op) {
   // at least the last few bits of it). That said, as mentioned above we will
   // need to write some sort of eviction mechanism for HRT entries over the
   // size limit.
-  const uns32 hist          = op->oracle_info.pred_global_hist; // prediction history
+  // const uns32 hist          = op->oracle_info.pred_global_hist; // prediction history
 
   const uns64 history = hrt_get(&tla_state, addr);
   const uns8 automata_state = pt_get(&tla_state, history);
@@ -242,7 +242,7 @@ void bp_two_level_adaptive_update(Op* op) {
   const uns   proc_id       = op->proc_id;  // process ID
   auto&       tla_state     = tla_state_all_cores.at(proc_id);
   const Addr  addr          = op->oracle_info.pred_addr;  // instruction address
-  const uns32 hist          = op->oracle_info.pred_global_hist;  // prediction history
+  // const uns32 hist          = op->oracle_info.pred_global_hist;  // prediction history
   const uns8  outcome       = op->oracle_info.dir;  // branch outcome
 
   // TODO: Check if this is correct. I didn't really check against the paper.
