@@ -50,107 +50,116 @@ enum Automata_state {S0 = 0, S1, S2, S3};   // Enumeration of automata states
 // The automata to use for the pattern table
 #define PT_automata TLA_AUTOMATA
 
+// AHRT (Associative History Register) associativity (AHRT uses set assoc cache)
+#define AHRT_set_assoc 4
+
 // Derived parameters
-// A bit mask for n bits should be 2^n - 1
-// TODO: Double check if this is correct
+// A bit mask for n bits should be 2^n - 1 (TODO: Double check this)
 #define HRT_entry_mask ((1 << HRT_entry_size) - 1)
+
 // We have 2^HR_entry_size entries in the pattern table
 #define PT_entries (1 << HRT_entry_size)
 
-// Set associative cache
-#define AHRT_set_assoc 4
 namespace {
-  struct CacheEntry {
-    uns64 tag;
-    uns64 content;
-  };
+  // ---------- TLA_State struct ----------
+  struct TLA_State {
+    
+    CacheState ahr_table;   // AHRT (Associative History Register Table)
+    std::vector<uns64> hash_hr_table;     // HHRT (Hash History Register 
+    // Table): This is misleading, it's more like an array, but the paper
+    // uses that name, so we'll also use it (to reduce confusion)
+    Hash_Table ihr_table;   // IHRT (Ideal History Register Table)
 
+    std::vector<uns8> pattern_table;
+  };
+  std::vector<TLA_State> tla_state_all_cores;
+
+  // ---------- Associative History Register Table (AHRT) ----------
+  // CacheEntry: Individual entry of AHRT
+  struct CacheEntry {     
+    uns64 AHRT_tag;      // NOT actual tag, just part stored in AHRT
+    uns64 content;
+    Flag valid_bit;     // must use flag since bools aren't supported
+  };              // valid bit needed since branch addr AHRT "tag" may be 0
+
+  // CacheState: Instance of AHRT
   struct CacheState {
     std::vector<std::vector<CacheEntry>> cache;
     uns set_count;
     uns assoc;
-    uns index_bit_count;
-  };
+    uns AHRT_index_len;   // NOT length of actual address index, just length of 
+  };                      // part used to index into AHRT
 
+  // uns_log2(): implementing log2 using shifts
   uns uns_log2(uns n) {
     uns result = 0;
-    if (n == 0) return 0;     // log2(0) is undefined, but we return 0
-    while(n >>= 1) result++;  // Shift n right until it is 0
+    if (n == 0) return 0;     // log2(0) is undefined, but here, we'll return 0
+    //while(n >>= 1) result++;  // Shift n right until it is 0 
+    while (n != 0) {            // I'm not entirely sure if the above works, so I wrote 
+      n >>= 1;                  // a more standard loop
+    }
     return result;            // The number of shifts is the log2 of n
   }
 
-  // Initialize the cache with the given size and associativity
+  // cache_init(): Initialize the cache with the given size and associativity
   void cache_init(CacheState* cache_state, const uns set_count, const uns assoc) {
-    cache_state->cache.resize(set_count, std::vector<CacheEntry>(assoc, CacheEntry{0, 0}));
+    cache_state->cache.resize(set_count, std::vector<CacheEntry>(assoc, CacheEntry{0, 0, 0}));   // TODO: check this
     cache_state->set_count = set_count;
     cache_state->assoc = assoc;
-    cache_state->index_bit_count = uns_log2(set_count);
+    cache_state->AHRT_index_len = uns_log2(set_count);
   }
 
-  // Move the nth element to the front of the inner set vector
+  // cache_move_to_front(): Move the nth element to the front of the inner set vector
   void cache_move_to_front(CacheState *cache_state, const uns set, const uns n) {
     const CacheEntry entry = cache_state->cache[set][n];
     cache_state->cache[set].erase(cache_state->cache[set].begin() + n);
     cache_state->cache[set].insert(cache_state->cache[set].begin(), entry);
-  }
+  }       
 
   // Get the history register content for the given address
   uns64 cache_get(CacheState* cache_state, const Addr addr) {
-    const uns64 index = addr & ((1 << cache_state->index_bit_count) - 1);
-    const uns64 tag = addr >> cache_state->index_bit_count;
+    const uns64 AHRT_index = addr & ((1 << cache_state->AHRT_index_len) - 1);
+    const uns64 AHRT_tag = addr >> cache_state->AHRT_index_len;
     uns n = 0;
-    for(const CacheEntry& entry : cache_state->cache[index]) {
-      if(entry.tag == tag) {
-        cache_move_to_front(cache_state, index, n);
+
+    for(const CacheEntry& entry : cache_state->cache[AHRT_index]) {
+      if(entry.tag == AHRT_tag && entry.valid_bit == 1) {
+        cache_move_to_front(cache_state, AHRT_index, n);
         return entry.content;
       }
       n++;
     }
+    // If the entry is not found, insert a new entry and evict the least recently 
+    // used entry (tail)
+    const CacheEntry new_entry = {AHRT_tag, 0, 1};
+    cache_state->cache[index].pop_back();
+    cache_state->cache[index].insert(cache_state->cache[index].begin(), new_entry);
     return 0;
   }
 
   // Update the history register content for the given address with the branch
   // outcome
   void cache_update(CacheState* cache_state, const Addr addr, const uns8 outcome) {
-    const uns64 index = addr & ((1 << cache_state->index_bit_count) - 1);
+    const uns64 index = addr & ((1 << cache_state->AHRT_index_len) - 1);
     const uns64 tag = addr >> cache_state->index_bit_count;
     uns n = 0;
     for(CacheEntry& entry : cache_state->cache[index]) {
       if(entry.tag == tag) {
         entry.content = (entry.content << 1) | (outcome & 0x1);
         cache_move_to_front(cache_state, index, n);
-        return;
+        break; //return;
       }
       n++;
     }
 
     // If the entry is not found, we need to insert a new entry and evict the
-    // least recently used entry (tail)
-    const CacheEntry new_entry = {tag, outcome};
+    // least recently used entry (tail) 
+    // TODO: This might not be needed here, since every time we call cache_update, we 
+    // are calling it for an address already residing in the AHRT
+    const CacheEntry new_entry = {tag, outcome, 1};
     cache_state->cache[index].pop_back();
     cache_state->cache[index].insert(cache_state->cache[index].begin(), new_entry);
   }
-}
-
-
-namespace {
-  struct TLA_State {
-    Hash_Table ihr_table;   // IHRT (Ideal History Register Table)
-
-    // This is misleading, it's more like a direct mapped cache, but the paper
-    // uses that name, so we'll also use it (to reduce confusion)
-    // This may be replaced by the AHRT (Address History Register Table) when
-    // that is implemented
-    std::vector<uns64> hash_hr_table;
-
-    CacheState ahr_table;   // AHRT (Associative History Register Table)
-
-    std::vector<uns8> pattern_table;
-  };
-
-  std::vector<TLA_State> tla_state_all_cores;
-
-  // ---------- Associative History Register Table ----------
 
   // ahrt_init: Initialize the AHRT with its proper size and all contents to 0.
   void ahrt_init(TLA_State* tla_state) {
@@ -172,14 +181,13 @@ namespace {
   // Note: The current implementation is based on a hash table. We can probably
   // do a similar thing to the automata and add a wrapper to allow for a cache
   // implementation. -> In reality, the hash table implementation didn't account
-  // for limited HRT size and resembled the IHRT (ideal history register table)
-  // more. The functionality will commented out (but kept for the IHRT).
+  // for limited HRT size and resembled the IHRT (ideal history register table),
+  // so functionality was repurposed for the IHRT.
 
   // ihrt_init: Initialize the HHRT with its proper size and all contents to 0.
   void hhrt_init(TLA_State* tla_state) {
     tla_state->hash_hr_table.resize(HRT_size, 0);
   }
-
 
   // Collisions: The paper mentions "interference" in the execution history
   // when using the HHRT. It may be possible that this is referring to the
@@ -233,9 +241,9 @@ namespace {
   uns64 ihrt_get(const TLA_State* tla_state, const Addr addr) {
     void* data = hash_table_access(&tla_state->ihr_table, addr);
 
-    if(!data) {
-      return 0;  // Return 0 if the entry is not found
-    }
+    if(!data) {       // Return 0 if the entry is not found
+      return 0;     
+    }  
 
     const uns64* history = static_cast<uns64*>(data);
 
@@ -254,10 +262,10 @@ namespace {
     auto* history = static_cast<uns64*>(
       hash_table_access_create(&tla_state->ihr_table, addr, &found));
 
-    if(!found) {
-      *history = 0;  // Initialize new entries to 0
-    }
-
+    if(!found) {        // Initialize new entries to 0
+      *history = 0;     // TODO: This might not be needed here, since every time 
+    }    // we call ihrt_update, we are calling it for an address already residing 
+          // in the IHRT
     // Left shift and insert the outcome bit
     *history = (*history << 1) | (outcome & 0x1);
   }
