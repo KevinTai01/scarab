@@ -58,10 +58,7 @@ enum Automata_state {S0 = 0, S1, S2, S3};   // Enumeration of automata states
 #define PT_entries (1 << HRT_entry_size)
 
 // Set associative cache
-// Each entry is indexed by and Addr and contains an uns64
-// The uns64 is the history register content
-// The cache should have an LRU replacement policy
-// The cache should have a size of HRT_size
+#define AHRT_set_assoc 4
 namespace {
   struct CacheEntry {
     uns64 tag;
@@ -84,7 +81,7 @@ namespace {
 
   // Initialize the cache with the given size and associativity
   void cache_init(CacheState* cache_state, const uns set_count, const uns assoc) {
-    cache_state->cache.resize(set_count, std::vector<CacheEntry>(assoc, CacheEntry()));
+    cache_state->cache.resize(set_count, std::vector<CacheEntry>(assoc, CacheEntry{0, 0}));
     cache_state->set_count = set_count;
     cache_state->assoc = assoc;
     cache_state->index_bit_count = uns_log2(set_count);
@@ -99,9 +96,9 @@ namespace {
 
   // Get the history register content for the given address
   uns64 cache_get(CacheState* cache_state, const Addr addr) {
-    const uns index = addr & ((1 << cache_state->index_bit_count) - 1);
-    const uns tag = addr >> cache_state->index_bit_count;
-    int n = 0;
+    const uns64 index = addr & ((1 << cache_state->index_bit_count) - 1);
+    const uns64 tag = addr >> cache_state->index_bit_count;
+    uns n = 0;
     for(const CacheEntry& entry : cache_state->cache[index]) {
       if(entry.tag == tag) {
         cache_move_to_front(cache_state, index, n);
@@ -115,9 +112,9 @@ namespace {
   // Update the history register content for the given address with the branch
   // outcome
   void cache_update(CacheState* cache_state, const Addr addr, const uns8 outcome) {
-    const uns index = addr & ((1 << cache_state->index_bit_count) - 1);
-    const uns tag = addr >> cache_state->index_bit_count;
-    int n = 0;
+    const uns64 index = addr & ((1 << cache_state->index_bit_count) - 1);
+    const uns64 tag = addr >> cache_state->index_bit_count;
+    uns n = 0;
     for(CacheEntry& entry : cache_state->cache[index]) {
       if(entry.tag == tag) {
         entry.content = (entry.content << 1) | (outcome & 0x1);
@@ -129,7 +126,7 @@ namespace {
 
     // If the entry is not found, we need to insert a new entry and evict the
     // least recently used entry (tail)
-    const CacheEntry new_entry = {addr, outcome};
+    const CacheEntry new_entry = {tag, outcome};
     cache_state->cache[index].pop_back();
     cache_state->cache[index].insert(cache_state->cache[index].begin(), new_entry);
   }
@@ -138,7 +135,7 @@ namespace {
 
 namespace {
   struct TLA_State {
-    Hash_Table ihr_table;    // ihr_table = IHRT (Ideal History Register Table)
+    Hash_Table ihr_table;   // IHRT (Ideal History Register Table)
 
     // This is misleading, it's more like a direct mapped cache, but the paper
     // uses that name, so we'll also use it (to reduce confusion)
@@ -146,10 +143,30 @@ namespace {
     // that is implemented
     std::vector<uns64> hash_hr_table;
 
+    CacheState ahr_table;   // AHRT (Associative History Register Table)
+
     std::vector<uns8> pattern_table;
   };
 
   std::vector<TLA_State> tla_state_all_cores;
+
+  // ---------- Associative History Register Table ----------
+
+  // ahrt_init: Initialize the AHRT with its proper size and all contents to 0.
+  void ahrt_init(TLA_State* tla_state) {
+    cache_init(&tla_state->ahr_table, HRT_size, AHRT_set_assoc);
+  }
+
+  // ahrt_get: Get the history register content for the given address
+  uns64 ahrt_get(TLA_State* tla_state, const Addr addr) {
+    return cache_get(&tla_state->ahr_table, addr);
+  }
+
+  // ahrt_update: Update the history register content for the given address with
+  // the branch outcome
+  void ahrt_update(TLA_State* tla_state, const Addr addr, const uns8 outcome) {
+    cache_update(&tla_state->ahr_table, addr, outcome);
+  }
 
   // ---------- Hash History Register Table ----------
   // Note: The current implementation is based on a hash table. We can probably
@@ -251,7 +268,7 @@ namespace {
   // mechanism is being used for the history register table.
   void hrt_init(TLA_State* tla_state) {
     if(TLA_HRT_MECHANISM == 0) {
-      return ihrt_init(tla_state);
+      return ahrt_init(tla_state);
     } else if (TLA_HRT_MECHANISM == 1) {
       return hhrt_init(tla_state);
     } else if (TLA_HRT_MECHANISM == 2) {
@@ -261,9 +278,9 @@ namespace {
     }
   }
 
-  uns64 hrt_get(const TLA_State* tla_state, const Addr addr) {
+  uns64 hrt_get(TLA_State* tla_state, const Addr addr) {
     if(TLA_HRT_MECHANISM == 0) {
-      return ihrt_get(tla_state, addr);
+      return ahrt_get(tla_state, addr);
     } else if (TLA_HRT_MECHANISM == 1) {
       return hhrt_get(tla_state, addr);
     } else if (TLA_HRT_MECHANISM == 2) {
@@ -276,7 +293,7 @@ namespace {
 
   void hrt_update(TLA_State* tla_state, const Addr addr, const uns8 outcome) {
     if(TLA_HRT_MECHANISM == 0) {
-      return ihrt_update(tla_state, addr, outcome);
+      return ahrt_update(tla_state, addr, outcome);
     } else if (TLA_HRT_MECHANISM == 1) {
       return hhrt_update(tla_state, addr, outcome);
     } else if (TLA_HRT_MECHANISM == 2) {
@@ -540,7 +557,7 @@ void bp_two_level_adaptive_init() {
 
 uns8 bp_two_level_adaptive_pred(Op* op) {
   const uns   proc_id       = op->proc_id;  // process ID
-  const auto& tla_state     = tla_state_all_cores.at(proc_id);
+  auto&       tla_state     = tla_state_all_cores.at(proc_id);
   const Addr  addr          = op->oracle_info.pred_addr;  // instruction address
 
   // Looking here, we have what appears to be the prediction history for the
