@@ -57,6 +57,85 @@ enum Automata_state {S0 = 0, S1, S2, S3};   // Enumeration of automata states
 // We have 2^HR_entry_size entries in the pattern table
 #define PT_entries (1 << HRT_entry_size)
 
+// Set associative cache
+// Each entry is indexed by and Addr and contains an uns64
+// The uns64 is the history register content
+// The cache should have an LRU replacement policy
+// The cache should have a size of HRT_size
+namespace {
+  struct CacheEntry {
+    uns64 tag;
+    uns64 content;
+  };
+
+  struct CacheState {
+    std::vector<std::vector<CacheEntry>> cache;
+    uns set_count;
+    uns assoc;
+    uns index_bit_count;
+  };
+
+  uns uns_log2(uns n) {
+    uns result = 0;
+    if (n == 0) return 0;     // log2(0) is undefined, but we return 0
+    while(n >>= 1) result++;  // Shift n right until it is 0
+    return result;            // The number of shifts is the log2 of n
+  }
+
+  // Initialize the cache with the given size and associativity
+  void cache_init(CacheState* cache_state, const uns set_count, const uns assoc) {
+    cache_state->cache.resize(set_count, std::vector<CacheEntry>(assoc, CacheEntry()));
+    cache_state->set_count = set_count;
+    cache_state->assoc = assoc;
+    cache_state->index_bit_count = uns_log2(set_count);
+  }
+
+  // Move the nth element to the front of the inner set vector
+  void cache_move_to_front(CacheState *cache_state, const uns set, const uns n) {
+    const CacheEntry entry = cache_state->cache[set][n];
+    cache_state->cache[set].erase(cache_state->cache[set].begin() + n);
+    cache_state->cache[set].insert(cache_state->cache[set].begin(), entry);
+  }
+
+  // Get the history register content for the given address
+  uns64 cache_get(CacheState* cache_state, const Addr addr) {
+    const uns index = addr & ((1 << cache_state->index_bit_count) - 1);
+    const uns tag = addr >> cache_state->index_bit_count;
+    int n = 0;
+    for(const CacheEntry& entry : cache_state->cache[index]) {
+      if(entry.tag == tag) {
+        cache_move_to_front(cache_state, index, n);
+        return entry.content;
+      }
+      n++;
+    }
+    return 0;
+  }
+
+  // Update the history register content for the given address with the branch
+  // outcome
+  void cache_update(CacheState* cache_state, const Addr addr, const uns8 outcome) {
+    const uns index = addr & ((1 << cache_state->index_bit_count) - 1);
+    const uns tag = addr >> cache_state->index_bit_count;
+    int n = 0;
+    for(CacheEntry& entry : cache_state->cache[index]) {
+      if(entry.tag == tag) {
+        entry.content = (entry.content << 1) | (outcome & 0x1);
+        cache_move_to_front(cache_state, index, n);
+        return;
+      }
+      n++;
+    }
+
+    // If the entry is not found, we need to insert a new entry and evict the
+    // least recently used entry (tail)
+    const CacheEntry new_entry = {addr, outcome};
+    cache_state->cache[index].pop_back();
+    cache_state->cache[index].insert(cache_state->cache[index].begin(), new_entry);
+  }
+}
+
+
 namespace {
   struct TLA_State {
     Hash_Table ihr_table;    // ihr_table = IHRT (Ideal History Register Table)
