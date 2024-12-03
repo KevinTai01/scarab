@@ -157,6 +157,7 @@ DEF_PARAM(  mtage_realistic_sc_100k  , MTAGE_REALISTIC_SC_100K   , Flag    , Fla
 
 // Parameters for two level adaptive implementation
 DEF_PARAM(  tla_hrt_entry_size        , TLA_HRT_ENTRY_SIZE        , uns     , uns        , 12          ,        )
-DEF_PARAM(  tla_hrt_entries           , TLA_HRT_ENTRIES           , uns     , uns        , 512         ,        )
+DEF_PARAM(  tla_hrt_entries           , TLA_HRT_TOTAL_ENTRIES     , uns     , uns        , 512         ,        )
+DEF_PARAM(  AHRT_set_assoc            , AHRT_SET_ASSOC            , uns     , uns        , 4           ,        )
 DEF_PARAM(  tla_hrt_mechanism         , TLA_HRT_MECHANISM         , uns     , uns        , 2           ,        ) // 0: ahrt, 1: hhrt, 2: ihrt
 DEF_PARAM(  tla_automata              , TLA_AUTOMATA              , uns     , uns        , 0           ,        ) // 0: last time, 1: a1, etc...

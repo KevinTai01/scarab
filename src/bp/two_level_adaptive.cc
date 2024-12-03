@@ -1,9 +1,9 @@
-// two_level_adaptive.cc
-// not added into bp.h, bp.cc, bp_table.def, ect. pending a working
-// implementation
+// two_level_adaptive.cc in scarab repo
+// now added into bp.h, bp.cc, bp_table.def, ect.
 
 #include "two_level_adaptive.h"
 #include <cmath>
+#include <map>
 #include <vector>
 
 extern "C" {
@@ -40,18 +40,18 @@ enum Automata_state {S0 = 0, S1, S2, S3};   // Enumeration of automata states
 // history register table), which is essentially an LRU cache. 
 // The HHRT is essentially a direct mapped cache (possibly without address 
 // checking), so this size can be used during its initialization.
-#define HRT_size TLA_HRT_ENTRIES
+#define HRT_size TLA_HRT_TOTAL_ENTRIES
 
-// The number of buckets in the ideal history register table. This is not to be
-// confused with the number of entries in the pattern table.
-// NOTE: This is irrelevant for the HHRT, but is for the IHRT instead.
-#define IHRT_buckets 4096
+// The number of buckets in the IHRT (ideal history register table). This is NOT
+// to be confused with the number of entries in the pattern table. -> This will
+// become ireelevant once the IHRT is implemented using a map 
+#define IHRT_buckets 65536
 
 // The automata to use for the pattern table
 #define PT_automata TLA_AUTOMATA
 
 // AHRT (Associative History Register) associativity (AHRT uses set assoc cache)
-#define AHRT_set_assoc 4
+#define AHRT_set_assoc AHRT_SET_ASSOC
 
 // Derived parameters
 // A bit mask for n bits should be 2^n - 1 (TODO: Double check this)
@@ -83,12 +83,10 @@ namespace {
   struct TLA_State {
     
     CacheState ahr_table;   // AHRT (Associative History Register Table)
-    std::vector<uns64> hash_hr_table;     // HHRT (Hash History Register 
-    // Table): This is misleading, it's more like an array, but the paper
-    // uses that name, so we'll also use it (to reduce confusion)
-    Hash_Table ihr_table;   // IHRT (Ideal History Register Table)
+    std::vector<uns64> hash_hr_table;     // HHRT (Hash History Register   
+    std::map<uns64, uns64> ihr_table;   // IHRT (Ideal History Register Table)
 
-    std::vector<uns8> pattern_table;
+    std::vector<uns8> pattern_table;    // PT (Pattern Table)
   };
   std::vector<TLA_State> tla_state_all_cores;
 
@@ -98,11 +96,8 @@ namespace {
   uns uns_log2(uns n) {
     uns result = 0;
     if (n == 0) return 0;     // log2(0) is undefined, but here, we'll return 0
-    //while(n >>= 1) result++;  // Shift n right until it is 0
-    while (n != 0) {            // I'm not entirely sure if the above works, so I wrote
-      n >>= 1;                  // a more standard loop
-      result++;
-    }
+    while(n >>= 1) result++;  // Shift n right until it is 0
+    
     return result;            // The number of shifts is the log2 of n
   }
 
@@ -130,8 +125,8 @@ namespace {
     for(const CacheEntry& entry : cache_state->cache[AHRT_index]) {
       if(entry.AHRT_tag == AHRT_tag && entry.valid_bit == 1) {
         cache_move_to_front(cache_state, AHRT_index, n);
-        return entry.content;
-      }
+        return entry.content & HRT_entry_mask;           
+      }                                                 
       n++;
     }
     // If the entry is not found, insert a new entry and evict the least recently
@@ -148,11 +143,12 @@ namespace {
     const uns64 AHRT_index = addr & ((1 << cache_state->AHRT_index_len) - 1);
     const uns64 AHRT_tag = addr >> cache_state->AHRT_index_len;
     uns n = 0;
+    
     for(CacheEntry& entry : cache_state->cache[AHRT_index]) {
       if(entry.AHRT_tag == AHRT_tag) {
         entry.content = (entry.content << 1) | (outcome & 0x1);
         cache_move_to_front(cache_state, AHRT_index, n);
-        break; //return;
+        return;
       }
       n++;
     }
@@ -168,7 +164,7 @@ namespace {
 
   // ahrt_init: Initialize the AHRT with its proper size and all contents to 0.
   void ahrt_init(TLA_State* tla_state) {
-    cache_init(&tla_state->ahr_table, HRT_size, AHRT_set_assoc);
+    cache_init(&tla_state->ahr_table, HRT_size/AHRT_set_assoc, AHRT_set_assoc);
   }
 
   // ahrt_get: Get the history register content for the given address
@@ -187,7 +183,7 @@ namespace {
   // do a similar thing to the automata and add a wrapper to allow for a cache
   // implementation. -> In reality, the hash table implementation didn't account
   // for limited HRT size and resembled the IHRT (ideal history register table),
-  // so functionality was repurposed for the IHRT.
+  // so the previous functionality was repurposed for the IHRT.
 
   // ihrt_init: Initialize the HHRT with its proper size and all contents to 0.
   void hhrt_init(TLA_State* tla_state) {
@@ -223,7 +219,7 @@ namespace {
     // TODO: Make sure this is right!!
     int   HHRT_index = static_cast<int>(addr) % HRT_size;
     auto* history    = &tla_state->hash_hr_table[HHRT_index];
-    // no collision checking for now (so expect performance to be... bad)
+    // no collision checking (so expect performance to be... bad)
 
     // Left shift and insert the latest outcome bit
     *history = (*history << 1) | (outcome & 0x1);
@@ -235,27 +231,31 @@ namespace {
   // table. We can setting all entries to 0 at the time of the first update.
   // Before that, the hash table accesses return NULL if the entry is not found,
   // which the wrapper function returns as 0.
+  // NOTE: This has been changed to use a map, since the scarab hashtable may not
+  // allow for theorietical unlimited capacity
+
+  // ihrt_init: Since we're using a map, we don't actually need this, so it's blank
   void ihrt_init(TLA_State* tla_state) {
-    init_hash_table(&tla_state->ihr_table, "history_register_table", IHRT_buckets,
-                    sizeof(uns64));
+    //init_hash_table(&tla_state->ihr_table, "history_register_table", IHRT_buckets,
+    //                sizeof(uns64));
   }
 
   // ihrt_get: Get the ideal history register content for the given address
   // Don't need to handle collisions (since the IHRT is used to simulate the
   // theoretical scenario of every branch being able to have its own HR)
-  uns64 ihrt_get(const TLA_State* tla_state, const Addr addr) {
-    void* data = hash_table_access(&tla_state->ihr_table, addr);
+  uns64 ihrt_get(TLA_State* tla_state, const Addr addr) {
+    uns64 history;
 
-    if(!data) {       // Return 0 if the entry is not found
-      return 0;     
-    }  
-
-    const uns64* history = static_cast<uns64*>(data);
+    if (tla_state->ihr_table.count(addr)) {       // Return 0 if the entry is not found
+      history = tla_state->ihr_table[addr];
+    }  else {
+      return 0;
+    }
 
     // Return the last HRT_entry_size bits of the history register content
     // This removes any history older than HRT_entry_size, effectively working
     // as though the underlying data structure has HRT_entry_size bits.
-    return *history & HRT_entry_mask;
+    return history & HRT_entry_mask;
   }
 
   // ihrt_update: Update the history register content for the given address with
@@ -263,16 +263,14 @@ namespace {
   // hash_table_access_replace function which might be a better choice here as
   // well, though I think that this also works.
   void ihrt_update(TLA_State* tla_state, const Addr addr, const uns8 outcome) {
-    Flag  found;
-    auto* history = static_cast<uns64*>(
-      hash_table_access_create(&tla_state->ihr_table, addr, &found));
-
-    if(!found) {        // Initialize new entries to 0
-      *history = 0;     // TODO: This might not be needed here, since every time 
-    }    // we call ihrt_update, we are calling it for an address already residing 
-          // in the IHRT
-    // Left shift and insert the outcome bit
-    *history = (*history << 1) | (outcome & 0x1);
+   
+    // If addr not initally found in ihrt, insert entry int ihrt using initial outcome
+    if(! tla_state->ihr_table.count(addr)) {      
+      tla_state->ihr_table.insert(std::pair<uint64_t, uint64_t>(addr, outcome));
+    } else {                                
+      tla_state->ihr_table[addr] = (tla_state->ihr_table[addr] << 1) | (outcome & 0x1) ;
+    }
+    
   }
 
   // ---------- History Register Selection Mechanism ----------
