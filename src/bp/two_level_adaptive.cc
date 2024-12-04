@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 #include <vector>
+#include <list>
 
 extern "C" {
 #include "bp/bp.param.h"
@@ -63,26 +64,101 @@ enum Automata_state {S0 = 0, S1, S2, S3};   // Enumeration of automata states
 namespace {
   // ---------- Set Associative Cache ----------
 
-  // CacheEntry: Individual entry of AHRT
   struct CacheEntry {
-    uns64 AHRT_tag;      // NOT actual tag, just part stored in AHRT
-    uns64 content;
-    Flag valid_bit;     // must use flag since bools aren't supported
-  };              // valid bit needed since branch addr AHRT "tag" may be 0
+    Addr tag;
+    uns64 value;
+  };
 
-  // CacheState: Instance of AHRT
-  struct CacheState {
-    std::vector<std::vector<CacheEntry>> cache;
-    uns set_count;
-    uns assoc;
-    uns AHRT_index_len;   // NOT length of actual address index, just length of
-  };                      // part used to index into AHRT
+  struct AHRT_Cache {
+    uns num_sets;
+    uns associativity;
+    // The outer vector represents the sets, and the inner list represents the
+    // entries in each set. Each entry is a struct containing the tag and value.
+    std::vector<std::list<CacheEntry>> cache;
+  };
+
+  // Initialize the cache with the given number of sets. Unlike the previous
+  // version, we don't initialize the sets at the start. This means that we
+  // don't need a valid bit, but we do need to check at each update if the
+  // set is full and evict the least recently used entry if it is.
+  void ahrt_cache_init(AHRT_Cache* cache, uns num_sets, uns associativity) {
+    cache->num_sets = num_sets;
+    cache->associativity = associativity;
+    cache->cache.resize(num_sets);
+  }
+
+  // Get the value associated with the given address. If the key is found, the
+  // value is updated and the entry is moved to the front of the set (most
+  // recently used position). If the key is not found, the function returns
+  // false. This is a bit more generic than the previous version and the
+  // AHRT-specific logic is moved to the calling code.
+  bool ahrt_cache_get(AHRT_Cache* cache, const Addr addr, uns64& value) {
+    const uns set_index = addr % cache->num_sets;
+    auto& set = cache->cache[set_index];
+
+    // Iterate through the set from start to end
+    for (auto it = set.begin(); it != set.end(); ++it) {
+      // I think we don't actually need to chop off the index bits to make
+      // the comparison, since ultimately we want to check that the entry
+      // corresponds exactly to the passed in address.
+      if (it->tag == addr) {
+        value = it->value;
+        // Move the accessed entry to the front (most recently used position)
+        set.splice(set.begin(), set, it);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Insert or update the value associated with the given address. If the
+  // address is not found in the cache, a new entry is inserted at the front
+  // of the set. If the set is full, the least recently used entry is evicted.
+  void ahrt_cache_put(AHRT_Cache* cache, const Addr addr, const uns64 value) {
+    const uns set_index = addr % cache->num_sets;
+    auto& set = cache->cache[set_index];
+
+    for (auto it = set.begin(); it != set.end(); ++it) {
+      if (it->tag == addr) {
+        // Update the value and move the entry to the front
+        it->value = value;
+        set.splice(set.begin(), set, it);
+        return;
+      }
+    }
+
+    // Remove least recently used entry if the set is full
+    if (set.size() >= cache->associativity) {
+      set.pop_back();
+    }
+
+    // Insert the new entry at the front
+    set.emplace_front(CacheEntry{addr, value});
+  }
+
+
+  // ---------- Set Associative Cache ----------
+
+  // CacheEntry: Individual entry of AHRT
+  // struct CacheEntry {
+  //   uns64 AHRT_tag;      // NOT actual tag, just part stored in AHRT
+  //   uns64 content;
+  //   Flag valid_bit;     // must use flag since bools aren't supported
+  // };              // valid bit needed since branch addr AHRT "tag" may be 0
+  //
+  // // CacheState: Instance of AHRT
+  // struct CacheState {
+  //   std::vector<std::vector<CacheEntry>> cache;
+  //   uns set_count;
+  //   uns assoc;
+  //   uns AHRT_index_len;   // NOT length of actual address index, just length of
+  // };                      // part used to index into AHRT
 
 
   // ---------- TLA_State struct ----------
   struct TLA_State {
-    
-    CacheState ahr_table;   // AHRT (Associative History Register Table)
+    // CacheState ahr_table;   // AHRT (Associative History Register Table)
+    AHRT_Cache ahr_table;
     std::vector<uns64> hash_hr_table;     // HHRT (Hash History Register   
     std::map<uns64, uns64> ihr_table;   // IHRT (Ideal History Register Table)
 
@@ -92,90 +168,97 @@ namespace {
 
   // ---------- Associative History Register Table (AHRT) ----------
 
-  // uns_log2(): implementing log2 using shifts
-  uns uns_log2(uns n) {
-    uns result = 0;
-    if (n == 0) return 0;     // log2(0) is undefined, but here, we'll return 0
-    while(n >>= 1) result++;  // Shift n right until it is 0
-    
-    return result;            // The number of shifts is the log2 of n
-  }
-
-  // cache_init(): Initialize the cache with the given size and associativity
-  void cache_init(CacheState* cache_state, const uns set_count, const uns assoc) {
-    cache_state->cache.resize(set_count, std::vector<CacheEntry>(assoc, CacheEntry{0, 0, 0}));
-    cache_state->set_count = set_count;
-    cache_state->assoc = assoc;
-    cache_state->AHRT_index_len = uns_log2(set_count);
-  }
-
-  // cache_move_to_front(): Move the nth element to the front of the inner set vector
-  void cache_move_to_front(CacheState *cache_state, const uns set, const uns n) {
-    const CacheEntry entry = cache_state->cache[set][n];
-    cache_state->cache[set].erase(cache_state->cache[set].begin() + n);
-    cache_state->cache[set].insert(cache_state->cache[set].begin(), entry);
-  }
-
-  // Get the history register content for the given address
-  uns64 cache_get(CacheState* cache_state, const Addr addr) {
-    const uns64 AHRT_index = addr & ((1 << cache_state->AHRT_index_len) - 1);
-    const uns64 AHRT_tag = addr >> cache_state->AHRT_index_len;
-    uns n = 0;
-
-    for(const CacheEntry& entry : cache_state->cache[AHRT_index]) {
-      if(entry.AHRT_tag == AHRT_tag && entry.valid_bit == 1) {
-        cache_move_to_front(cache_state, AHRT_index, n);
-        return entry.content & HRT_entry_mask;           
-      }                                                 
-      n++;
-    }
-    // If the entry is not found, insert a new entry and evict the least recently
-    // used entry (tail)
-    const CacheEntry new_entry = {AHRT_tag, 0, 1};
-    cache_state->cache[AHRT_index].pop_back();
-    cache_state->cache[AHRT_index].insert(cache_state->cache[AHRT_index].begin(), new_entry);
-    return 0;
-  }
-
-  // Update the history register content for the given address with the branch
-  // outcome
-  void cache_update(CacheState* cache_state, const Addr addr, const uns8 outcome) {
-    const uns64 AHRT_index = addr & ((1 << cache_state->AHRT_index_len) - 1);
-    const uns64 AHRT_tag = addr >> cache_state->AHRT_index_len;
-    uns n = 0;
-    
-    for(CacheEntry& entry : cache_state->cache[AHRT_index]) {
-      if(entry.AHRT_tag == AHRT_tag) {
-        entry.content = (entry.content << 1) | (outcome & 0x1);
-        cache_move_to_front(cache_state, AHRT_index, n);
-        return;
-      }
-      n++;
-    }
-
-    // If the entry is not found, we need to insert a new entry and evict the
-    // least recently used entry (tail)
-    // TODO: This might not be needed here, since every time we call cache_update, we
-    // are calling it for an address already residing in the AHRT
-    const CacheEntry new_entry = {AHRT_tag, outcome, 1};
-    cache_state->cache[AHRT_index].pop_back();
-    cache_state->cache[AHRT_index].insert(cache_state->cache[AHRT_index].begin(), new_entry);
-  }
+  // // uns_log2(): implementing log2 using shifts
+  // uns uns_log2(uns n) {
+  //   uns result = 0;
+  //   if (n == 0) return 0;     // log2(0) is undefined, but here, we'll return 0
+  //   while(n >>= 1) result++;  // Shift n right until it is 0
+  //
+  //   return result;            // The number of shifts is the log2 of n
+  // }
+  //
+  // // cache_init(): Initialize the cache with the given size and associativity
+  // void cache_init(CacheState* cache_state, const uns set_count, const uns assoc) {
+  //   cache_state->cache.resize(set_count, std::vector<CacheEntry>(assoc, CacheEntry{0, 0, 0}));
+  //   cache_state->set_count = set_count;
+  //   cache_state->assoc = assoc;
+  //   cache_state->AHRT_index_len = uns_log2(set_count);
+  // }
+  //
+  // // cache_move_to_front(): Move the nth element to the front of the inner set vector
+  // void cache_move_to_front(CacheState *cache_state, const uns set, const uns n) {
+  //   const CacheEntry entry = cache_state->cache[set][n];
+  //   cache_state->cache[set].erase(cache_state->cache[set].begin() + n);
+  //   cache_state->cache[set].insert(cache_state->cache[set].begin(), entry);
+  // }
+  //
+  // // Get the history register content for the given address
+  // uns64 cache_get(CacheState* cache_state, const Addr addr) {
+  //   const uns64 AHRT_index = addr & ((1 << cache_state->AHRT_index_len) - 1);
+  //   const uns64 AHRT_tag = addr >> cache_state->AHRT_index_len;
+  //   uns n = 0;
+  //
+  //   for(const CacheEntry& entry : cache_state->cache[AHRT_index]) {
+  //     if(entry.AHRT_tag == AHRT_tag && entry.valid_bit == 1) {
+  //       cache_move_to_front(cache_state, AHRT_index, n);
+  //       return entry.content & HRT_entry_mask;
+  //     }
+  //     n++;
+  //   }
+  //   // If the entry is not found, insert a new entry and evict the least recently
+  //   // used entry (tail)
+  //   // const CacheEntry new_entry = {AHRT_tag, 0, 1};
+  //   // cache_state->cache[AHRT_index].pop_back();
+  //   // cache_state->cache[AHRT_index].insert(cache_state->cache[AHRT_index].begin(), new_entry);
+  //   return 0;
+  // }
+  //
+  // // Update the history register content for the given address with the branch
+  // // outcome
+  // void cache_update(CacheState* cache_state, const Addr addr, const uns8 outcome) {
+  //   const uns64 AHRT_index = addr & ((1 << cache_state->AHRT_index_len) - 1);
+  //   const uns64 AHRT_tag = addr >> cache_state->AHRT_index_len;
+  //   uns n = 0;
+  //
+  //   for(CacheEntry& entry : cache_state->cache[AHRT_index]) {
+  //     if(entry.AHRT_tag == AHRT_tag) {
+  //       entry.content = (entry.content << 1) | (outcome & 0x1);
+  //       cache_move_to_front(cache_state, AHRT_index, n);
+  //       return;
+  //     }
+  //     n++;
+  //   }
+  //
+  //   // If the entry is not found, we need to insert a new entry and evict the
+  //   // least recently used entry (tail)
+  //   // TODO: This might not be needed here, since every time we call cache_update, we
+  //   // are calling it for an address already residing in the AHRT
+  //   const CacheEntry new_entry = {AHRT_tag, outcome, 1};
+  //   cache_state->cache[AHRT_index].pop_back();
+  //   cache_state->cache[AHRT_index].insert(cache_state->cache[AHRT_index].begin(), new_entry);
+  // }
 
   // ahrt_init: Initialize the AHRT with its proper size and all contents to 0.
   void ahrt_init(TLA_State* tla_state) {
-    cache_init(&tla_state->ahr_table, HRT_size/AHRT_set_assoc, AHRT_set_assoc);
+    ahrt_cache_init(&tla_state->ahr_table, HRT_size/AHRT_set_assoc, AHRT_set_assoc);
   }
 
   // ahrt_get: Get the history register content for the given address
   uns64 ahrt_get(TLA_State* tla_state, const Addr addr) {
-    return cache_get(&tla_state->ahr_table, addr);
+    uns64 history;
+    if(ahrt_cache_get(&tla_state->ahr_table, addr, history)) {
+      return history & HRT_entry_mask;
+    } else {
+      return 0;
+    }
   }
 
   // ahrt_update: Update the history register content for the given address with
   // the branch outcome
   void ahrt_update(TLA_State* tla_state, const Addr addr, const uns8 outcome) {
-    cache_update(&tla_state->ahr_table, addr, outcome);
+    auto history = ahrt_get(tla_state, addr);
+    history = (history << 1) | (outcome & 0x1);
+    ahrt_cache_put(&tla_state->ahr_table, addr, history);
   }
 
   // ---------- Hash History Register Table ----------
