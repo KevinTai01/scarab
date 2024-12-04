@@ -108,7 +108,7 @@ namespace {
   bool ahrt_cache_get(AHRT_Cache* cache, const Addr addr, uns64& value) {
     const uns set_index = addr % cache->num_sets;
     auto& set = cache->cache[set_index];
-    const uns tag = addr >> cache->index_len;
+    const Addr tag = addr >> cache->index_len;
 
     // Iterate through the set from start to end
     for (auto it = set.begin(); it != set.end(); ++it) {
@@ -128,7 +128,7 @@ namespace {
   void ahrt_cache_put(AHRT_Cache* cache, const Addr addr, const uns64 value) {
     const uns set_index = addr % cache->num_sets;
     auto& set = cache->cache[set_index];
-    const uns tag = addr >> cache->index_len;
+    const Addr tag = addr >> cache->index_len;
 
     for (auto it = set.begin(); it != set.end(); ++it) {
       if (it->tag == tag) {
@@ -145,7 +145,7 @@ namespace {
     }
 
     // Insert the new entry at the front
-    set.emplace_front(CacheEntry{addr, value});
+    set.emplace_front(CacheEntry{tag, value});
   }
 
 
