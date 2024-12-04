@@ -64,6 +64,15 @@ enum Automata_state {S0 = 0, S1, S2, S3};   // Enumeration of automata states
 namespace {
   // ---------- Set Associative Cache ----------
 
+  // uns_log2(): implementing log2 using shifts
+  uns uns_log2(uns n) {
+    uns result = 0;
+    if (n == 0) return 0;     // log2(0) is undefined, but here, we'll return 0
+    while(n >>= 1) result++;  // Shift n right until it is 0
+
+    return result;            // The number of shifts is the log2 of n
+  }
+
   struct CacheEntry {
     Addr tag;
     uns64 value;
@@ -72,6 +81,9 @@ namespace {
   struct AHRT_Cache {
     uns num_sets;
     uns associativity;
+    // Number of bits used for the index into the cache. The rest of the bits
+    // are used for the tag.
+    uns index_len;
     // The outer vector represents the sets, and the inner list represents the
     // entries in each set. Each entry is a struct containing the tag and value.
     std::vector<std::list<CacheEntry>> cache;
@@ -84,6 +96,7 @@ namespace {
   void ahrt_cache_init(AHRT_Cache* cache, uns num_sets, uns associativity) {
     cache->num_sets = num_sets;
     cache->associativity = associativity;
+    cache->index_len = uns_log2(num_sets);
     cache->cache.resize(num_sets);
   }
 
@@ -95,13 +108,11 @@ namespace {
   bool ahrt_cache_get(AHRT_Cache* cache, const Addr addr, uns64& value) {
     const uns set_index = addr % cache->num_sets;
     auto& set = cache->cache[set_index];
+    const uns tag = addr >> cache->index_len;
 
     // Iterate through the set from start to end
     for (auto it = set.begin(); it != set.end(); ++it) {
-      // I think we don't actually need to chop off the index bits to make
-      // the comparison, since ultimately we want to check that the entry
-      // corresponds exactly to the passed in address.
-      if (it->tag == addr) {
+      if (it->tag == tag) {
         value = it->value;
         // Move the accessed entry to the front (most recently used position)
         set.splice(set.begin(), set, it);
@@ -117,9 +128,10 @@ namespace {
   void ahrt_cache_put(AHRT_Cache* cache, const Addr addr, const uns64 value) {
     const uns set_index = addr % cache->num_sets;
     auto& set = cache->cache[set_index];
+    const uns tag = addr >> cache->index_len;
 
     for (auto it = set.begin(); it != set.end(); ++it) {
-      if (it->tag == addr) {
+      if (it->tag == tag) {
         // Update the value and move the entry to the front
         it->value = value;
         set.splice(set.begin(), set, it);
